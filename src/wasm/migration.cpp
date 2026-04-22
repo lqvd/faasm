@@ -134,6 +134,44 @@ void doMigrationPoint(int32_t entrypointFuncWasmOffset,
             msg.set_mpirank(call->mpirank());
         }
 
+        // If message is RPC, propagate necessary RPC bits and serialize the
+        // RPC migration context (channels and targets) and add to payload
+        if (call->isrpc()) {
+            msg.set_isrpc(true);
+            msg.set_rpcservice(call->rpcservice());
+            msg.set_rpcreplyid(call->rpcreplyid());
+
+            auto& rpcContext = faabric::rpc::getExecutingRpcContext();
+
+            rpcContext.beginQuiesce();
+            try {
+                rpcContext.awaitQuiesced(2000);
+            } catch (std::runtime_error& e) {
+                rpcContext.endQuiesce();
+                SPDLOG_ERROR("{}:{}:{} RPC quiescence timed out, aborting migration",
+                             call->appid(), call->groupid(), call->groupidx());
+                getExecutingModule()->doThrowException(e);
+            } 
+
+            faabric::RpcMigrationContext rpcMigrationContext;
+
+            for (const auto& [channelId, targetUri] :
+                 rpcContext.serializeChannels()) {
+                auto* channelState = rpcMigrationContext.add_channels();
+                channelState->set_channelid(channelId);
+                channelState->set_targeturi(targetUri);
+            }
+
+            std::string serializedRpcContext;
+            if (!rpcMigrationContext.SerializeToString(&serializedRpcContext)) {
+                auto exc =
+                  std::runtime_error("Failed to serialise RpcMigrationContext");
+                getExecutingModule()->doThrowException(exc);
+            }
+            req->set_contextdata(serializedRpcContext.data(),
+                                 serializedRpcContext.size());
+        }
+
         if (call->recordexecgraph()) {
             msg.set_recordexecgraph(true);
         }

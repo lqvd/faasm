@@ -131,6 +131,7 @@ def wamr(ctx, clean=False):
     _do_codegen_user("demo", clean)
     _do_codegen_user("errors", clean)
     _do_codegen_user("mpi", clean)
+    _do_codegen_user("rpc", clean)
     _do_codegen_user("omp", clean)
     _do_codegen_user("s3", clean)
     _do_codegen_user("threads", clean)

@@ -4,6 +4,9 @@
 
 #include <faabric/endpoint/FaabricEndpoint.h>
 #include <faabric/executor/ExecutorFactory.h>
+#include <faabric/proto/faabric.pb.h>
+#include <faabric/rpc/RpcServer.h>
+#include <faabric/rpc/rpc.h>
 #include <faabric/runner/FaabricMain.h>
 #include <faabric/util/logging.h>
 
@@ -22,6 +25,19 @@ int main()
           std::make_shared<faaslet::FaasletFactory>();
         faabric::runner::FaabricMain m(fac);
         m.startBackground();
+
+        m.registerRpcHandler("ping",
+            [](const uint8_t* reqData, size_t reqLen, std::vector<uint8_t>& respData) {
+                SPDLOG_INFO("Worker received RPC ping payload of length {}", reqLen);
+                
+                // Return dummy empty response
+                faabric::EmptyResponse resp;
+                auto size = resp.ByteSizeLong();
+                respData.resize(size);
+                resp.SerializeToArray(respData.data(), size);
+                
+                return Rpc_Status{ Rpc_StatusCode::OK, "" };
+            });
 
         SPDLOG_INFO("Starting HTTP endpoint on worker");
         faabric::endpoint::FaabricEndpoint endpoint;

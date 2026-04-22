@@ -1,6 +1,7 @@
 # Add the different test directories. Each subdirectory will populate the
 # TEST_FILES variable, adding the source files for the tests
 add_subdirectory(chaining)
+add_subdirectory(rpc)
 add_subdirectory(mpi)
 add_subdirectory(state)
 add_subdirectory(threads)
