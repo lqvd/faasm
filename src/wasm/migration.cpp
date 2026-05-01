@@ -2,6 +2,8 @@
 #include <faabric/batch-scheduler/SchedulingDecision.h>
 #include <faabric/executor/ExecutorContext.h>
 #include <faabric/mpi/MpiWorldRegistry.h>
+#include <faabric/rpc/RpcContext.h>
+#include <faabric/rpc/RpcContextRegistry.h>
 #include <faabric/scheduler/FunctionCallClient.h>
 #include <faabric/scheduler/Scheduler.h>
 #include <faabric/snapshot/SnapshotClient.h>
@@ -141,35 +143,44 @@ void doMigrationPoint(int32_t entrypointFuncWasmOffset,
             msg.set_rpcservice(call->rpcservice());
             msg.set_rpcreplyid(call->rpcreplyid());
 
-            auto& rpcContext = faabric::rpc::getExecutingRpcContext();
-
-            rpcContext.beginQuiesce();
-            try {
-                rpcContext.awaitQuiesced(2000);
-            } catch (std::runtime_error& e) {
-                rpcContext.endQuiesce();
-                SPDLOG_ERROR("{}:{}:{} RPC quiescence timed out, aborting migration",
-                             call->appid(), call->groupid(), call->groupidx());
-                getExecutingModule()->doThrowException(e);
-            } 
-
-            faabric::RpcMigrationContext rpcMigrationContext;
-
-            for (const auto& [channelId, targetUri] :
-                 rpcContext.serializeChannels()) {
-                auto* channelState = rpcMigrationContext.add_channels();
-                channelState->set_channelid(channelId);
-                channelState->set_targeturi(targetUri);
+            auto& registry = faabric::rpc::getRpcContextRegistry();
+            std::shared_ptr<faabric::rpc::RpcContext> rpcContext =
+              registry.getContext(call->id());
+            if (!rpcContext) {
+              auto exc = std::runtime_error(
+                "No RPC context found for migrating message");
+              getExecutingModule()->doThrowException(exc);
             }
 
-            std::string serializedRpcContext;
-            if (!rpcMigrationContext.SerializeToString(&serializedRpcContext)) {
+            // Use beginQuiesce as a write lock.
+            // TODO: This isn't really necessary Delete at some point
+            rpcContext->beginQuiesce();
+
+            // Set proxy before migration.
+            registry.setForwardingAddress(call->id(), hostToMigrateTo);
+
+            faabric::RpcMigrationState rpcMigrationState =
+              rpcContext->serializeMigrationState();
+
+            std::string serializedRpcState;
+            if (!rpcMigrationState.SerializeToString(&serializedRpcState)) {
                 auto exc =
-                  std::runtime_error("Failed to serialise RpcMigrationContext");
+                  std::runtime_error("Failed to serialise RpcMigrationState");
                 getExecutingModule()->doThrowException(exc);
             }
-            req->set_contextdata(serializedRpcContext.data(),
-                                 serializedRpcContext.size());
+
+            req->set_contextdata(serializedRpcState.data(),
+                                 serializedRpcState.size());
+
+            registry.removeContext(call->id());
+
+            SPDLOG_INFO("RPC - Serialising migration state for msg {}: "
+                        "{} channels, {} pending requests, frameOffset={} funcptr={}",
+                        call->id(),
+                        rpcMigrationState.channels_size(),
+                        rpcMigrationState.pendingrequests_size(),
+                        entrypointFuncArg,
+                        msg.funcptr());
         }
 
         if (call->recordexecgraph()) {
