@@ -89,19 +89,6 @@ uint8_t* getBufferFromWasm(WAMRWasmModule* module,
     return reinterpret_cast<uint8_t*>(wasmPtr);
 }
 
-void setResumeStep(WAMRWasmModule* module,
-                   int32_t* statePtr,
-                   int32_t resumeStep)
-{
-    if (statePtr == nullptr) {
-        std::runtime_error ex("Null migration state pointer");
-        module->doThrowException(ex);
-        return;
-    }
-    module->validateNativePointer(statePtr, sizeof(int32_t));
-    statePtr[0] = resumeStep;
-}
-
 // ------
 // per-call setup
 // ------
@@ -250,14 +237,10 @@ static int32_t __faasm_rpc_test_response_wrapper(wasm_exec_env_t,
 
 static void __faasm_rpc_wait_migratable_wrapper(wasm_exec_env_t,
                                                 uint32_t requestId,
-                                                int32_t wasmFuncPtr,
-                                                int32_t* statePtr,
-                                                int32_t resumeStep)
+                                                int32_t wasmResumeTarget,
+                                                int32_t frameOffset)
 {
     auto* module = getExecutingWAMRModule();
-
-    setResumeStep(module, statePtr, resumeStep);
-
     auto ctx = getCurrentContext();
     if (!ctx) {
         std::runtime_error ex("RPC wait: no context for executing message");
@@ -268,6 +251,7 @@ static void __faasm_rpc_wait_migratable_wrapper(wasm_exec_env_t,
     while (true) {
         try {
             if (ctx->testResponse(requestId)) {
+                SPDLOG_INFO("RPC wait: got response. Returning.");
                 return;
             }
         } catch (const std::exception& e) {
@@ -275,7 +259,7 @@ static void __faasm_rpc_wait_migratable_wrapper(wasm_exec_env_t,
             return;
         }
 
-        wasm::doMigrationPoint(wasmFuncPtr, "");
+        wasm::doMigrationPoint(wasmResumeTarget, std::to_string(frameOffset));
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
 }
@@ -344,7 +328,7 @@ static NativeSymbol ns[] = {
     REG_NATIVE_FUNC(Rpc_ChannelClose, "(i)i"),
     REG_NATIVE_FUNC(__faasm_rpc_unary_start, "(i**i*)i"),
     REG_NATIVE_FUNC(__faasm_rpc_test_response, "(i)i"),
-    REG_NATIVE_FUNC(__faasm_rpc_wait_migratable, "(ii*i)"),
+    REG_NATIVE_FUNC(__faasm_rpc_wait_migratable, "(iii)"),
     REG_NATIVE_FUNC(__faasm_rpc_get_response, "(i**)i"),
 };
 
