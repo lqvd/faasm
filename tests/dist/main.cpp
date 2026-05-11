@@ -3,6 +3,8 @@
 #include "faabric_utils.h"
 
 #include <catch2/catch.hpp>
+#include <chrono>
+#include <thread>
 
 #include <faabric/executor/ExecutorFactory.h>
 #include <faabric/proto/faabric.pb.h>
@@ -34,6 +36,8 @@ int main(int argc, char* argv[])
         [](const uint8_t* reqData, size_t reqLen, std::vector<uint8_t>& respData) {
             SPDLOG_INFO("Worker received RPC ping payload of length {}", reqLen);
             
+            std::this_thread::sleep_for(std::chrono::milliseconds(2000));
+
             // Return dummy empty response
             faabric::EmptyResponse resp;
             auto size = resp.ByteSizeLong();
@@ -41,6 +45,19 @@ int main(int argc, char* argv[])
             resp.SerializeToArray(respData.data(), size);
             
             return Rpc_Status{ Rpc_StatusCode::OK, "" };
+        });
+    m.registerRpcHandler("ping_slow",
+        [](const uint8_t* reqData, size_t reqLen, std::vector<uint8_t>& respData) {
+            SPDLOG_INFO("Worker received RPC slow ping payload of length {}", reqLen);
+
+            std::this_thread::sleep_for(std::chrono::milliseconds(8000));
+
+            faabric::EmptyResponse resp;
+            auto size = resp.ByteSizeLong();
+            respData.resize(size);
+            resp.SerializeToArray(respData.data(), size);
+            
+            return Rpc_Status{ Rpc_StatusCode::OK, "" }; 
         });
 
     // Wait for things to start

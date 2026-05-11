@@ -30,6 +30,8 @@ int main()
             [](const uint8_t* reqData, size_t reqLen, std::vector<uint8_t>& respData) {
                 SPDLOG_INFO("Worker received RPC ping payload of length {}", reqLen);
                 
+                std::this_thread::sleep_for(std::chrono::milliseconds(2000));
+
                 // Return dummy empty response
                 faabric::EmptyResponse resp;
                 auto size = resp.ByteSizeLong();
@@ -37,6 +39,19 @@ int main()
                 resp.SerializeToArray(respData.data(), size);
                 
                 return Rpc_Status{ Rpc_StatusCode::OK, "" };
+            });
+        m.registerRpcHandler("ping_slow",
+            [](const uint8_t* reqData, size_t reqLen, std::vector<uint8_t>& respData) {
+                SPDLOG_INFO("Worker received RPC slow ping payload of length {}", reqLen);
+
+                std::this_thread::sleep_for(std::chrono::milliseconds(8000));
+
+                faabric::EmptyResponse resp;
+                auto size = resp.ByteSizeLong();
+                respData.resize(size);
+                resp.SerializeToArray(respData.data(), size);
+                
+                return Rpc_Status{ Rpc_StatusCode::OK, "" }; 
             });
 
         SPDLOG_INFO("Starting HTTP endpoint on worker");
