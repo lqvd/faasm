@@ -175,7 +175,8 @@ static int32_t __faasm_rpc_unary_start_wrapper(wasm_exec_env_t,
                                                int32_t* methodStrPtr,
                                                int32_t* reqBufPtr,
                                                int32_t reqLen,
-                                               uint32_t* outRequestIdPtr)
+                                               uint32_t* outRequestIdPtr,
+                                               int32_t timeoutMs)
 {
     auto* module = getExecutingWAMRModule();
 
@@ -201,14 +202,13 @@ static int32_t __faasm_rpc_unary_start_wrapper(wasm_exec_env_t,
 
     try {
         uint32_t requestId =
-          ctx->startUnary(channelId, methodName, reqBuf, reqLen);
+          ctx->startUnary(channelId, methodName, reqBuf, reqLen, timeoutMs);
         *outRequestIdPtr = requestId;
 
-        // Register the request → msgId mapping so the server thread can
-        // route the response back to the right context.
+        // Register the [request, msgId] mapping so the server thread can
+        // route the response back to the righ context.
         int32_t msgId =
           faabric::executor::ExecutorContext::get()->getMsg().id();
-        getRpcContextRegistry().registerInFlightRequest(requestId, msgId);
 
         SPDLOG_TRACE("RPC unary start ch={} method={} req={}",
                      channelId, methodName, requestId);
@@ -249,17 +249,13 @@ static void __faasm_rpc_wait_migratable_wrapper(wasm_exec_env_t,
     }
 
     while (true) {
-        try {
-            if (ctx->testResponse(requestId)) {
-                SPDLOG_INFO("RPC wait: got response. Returning.");
-                return;
-            }
-        } catch (const std::exception& e) {
-            handleException(module, e, "wait");
+        wasm::doMigrationPoint(wasmResumeTarget, std::to_string(frameOffset));
+
+        if (ctx->testResponse(requestId)) {
+            SPDLOG_INFO("RPC wait: got response. Returning.");
             return;
         }
 
-        wasm::doMigrationPoint(wasmResumeTarget, std::to_string(frameOffset));
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
 }
@@ -293,7 +289,7 @@ static int32_t __faasm_rpc_get_response_wrapper(wasm_exec_env_t,
             return static_cast<int32_t>(Rpc_StatusCode::UNAVAILABLE);
         }
 
-        // Response consumed — drop the [request, msgId] mapping.
+        // Response consumed... drop the [request, msgId] mapping.
         getRpcContextRegistry().clearRequest(requestId);
 
         if (resp.statuscode() != Rpc_StatusCode::OK) {
@@ -326,7 +322,7 @@ static int32_t __faasm_rpc_get_response_wrapper(wasm_exec_env_t,
 static NativeSymbol ns[] = {
     REG_NATIVE_FUNC(Rpc_ChannelCreate, "(**)i"),
     REG_NATIVE_FUNC(Rpc_ChannelClose, "(i)i"),
-    REG_NATIVE_FUNC(__faasm_rpc_unary_start, "(i**i*)i"),
+    REG_NATIVE_FUNC(__faasm_rpc_unary_start, "(i**i*i)i"),
     REG_NATIVE_FUNC(__faasm_rpc_test_response, "(i)i"),
     REG_NATIVE_FUNC(__faasm_rpc_wait_migratable, "(iii)"),
     REG_NATIVE_FUNC(__faasm_rpc_get_response, "(i**)i"),
