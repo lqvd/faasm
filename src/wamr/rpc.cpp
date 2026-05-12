@@ -23,45 +23,6 @@ namespace wasm {
 
 namespace {
 
-// Holds the context by shared_ptr so the C++ object cannot be destroyed
-// underneath an in-flight host call, even if the registry evicts it
-// (e.g. on migration). Exits the call counter on destruction.
-class RpcCallScopeGuard
-{
-  public:
-    explicit RpcCallScopeGuard(std::shared_ptr<RpcContext> ctxIn)
-      : ctx(std::move(ctxIn))
-    {
-        if (ctx) {
-            active = ctx->tryEnterCall();
-        }
-    }
-
-    ~RpcCallScopeGuard()
-    {
-        if (active && ctx) {
-            ctx->exitCall();
-        }
-    }
-
-    // `if (!guard)` syntax
-    explicit operator bool() const { return active; }
-
-    RpcCallScopeGuard(const RpcCallScopeGuard&) = delete;
-    RpcCallScopeGuard& operator=(const RpcCallScopeGuard&) = delete;
-
-    RpcCallScopeGuard(RpcCallScopeGuard&& other) noexcept
-      : ctx(std::move(other.ctx)), active(other.active)
-    {
-        other.active = false;
-    }
-    RpcCallScopeGuard& operator=(RpcCallScopeGuard&&) = delete;
-
-  private:
-    std::shared_ptr<RpcContext> ctx;
-    bool active = false;
-};
-
 // ------
 // wasm pointer helpers
 // ------
@@ -126,12 +87,6 @@ static int32_t Rpc_ChannelCreate_wrapper(wasm_exec_env_t,
         return static_cast<int32_t>(Rpc_StatusCode::INTERNAL);
     }
 
-    RpcCallScopeGuard guard(ctx);
-    if (!guard) {
-        SPDLOG_WARN("RPC channel create rejected (quiescing)");
-        return static_cast<int32_t>(Rpc_StatusCode::UNAVAILABLE);
-    }
-
     module->validateNativePointer(outChannelIdPtr, sizeof(int32_t));
     std::string targetUri = getStringFromWasm(module, targetUriPtr);
 
@@ -150,12 +105,6 @@ static int32_t Rpc_ChannelClose_wrapper(wasm_exec_env_t, int32_t channelId)
     if (!ctx) {
         SPDLOG_WARN("RPC channel close rejected (no context)");
         return static_cast<int32_t>(Rpc_StatusCode::INTERNAL);
-    }
-
-    RpcCallScopeGuard guard(ctx);
-    if (!guard) {
-        SPDLOG_WARN("RPC channel close rejected (quiescing)");
-        return static_cast<int32_t>(Rpc_StatusCode::UNAVAILABLE);
     }
 
     try {
@@ -195,11 +144,6 @@ static int32_t __faasm_rpc_unary_start_wrapper(wasm_exec_env_t,
         return static_cast<int32_t>(Rpc_StatusCode::INTERNAL);
     }
 
-    RpcCallScopeGuard guard(ctx);
-    if (!guard) {
-        return static_cast<int32_t>(Rpc_StatusCode::UNAVAILABLE);
-    }
-
     try {
         uint32_t requestId =
           ctx->startUnary(channelId, methodName, reqBuf, reqLen, timeoutMs);
@@ -219,7 +163,7 @@ static int32_t __faasm_rpc_unary_start_wrapper(wasm_exec_env_t,
 }
 
 static int32_t __faasm_rpc_test_response_wrapper(wasm_exec_env_t,
-                                                  uint32_t requestId)
+                                                 uint32_t requestId)
 {
     auto ctx = getCurrentContext();
     if (!ctx) {
@@ -240,9 +184,12 @@ static void __faasm_rpc_wait_migratable_wrapper(wasm_exec_env_t,
                                                 int32_t wasmResumeTarget,
                                                 int32_t frameOffset)
 {
+    SPDLOG_DEBUG("S - faasm_rpc_wait_migratable {} {} {}",
+                 requestId , wasmResumeTarget, frameOffset);
     auto* module = getExecutingWAMRModule();
     auto ctx = getCurrentContext();
     if (!ctx) {
+        SPDLOG_ERROR("RPC no context for executing message");
         std::runtime_error ex("RPC wait: no context for executing message");
         module->doThrowException(ex);
         return;
@@ -275,11 +222,6 @@ static int32_t __faasm_rpc_get_response_wrapper(wasm_exec_env_t,
 
     module->validateNativePointer(outRespBufOffsetPtr, sizeof(int32_t));
     module->validateNativePointer(outRespLenPtr, sizeof(int32_t));
-
-    RpcCallScopeGuard guard(ctx);
-    if (!guard) {
-        return static_cast<int32_t>(Rpc_StatusCode::UNAVAILABLE);
-    }
 
     try {
         faabric::RpcResponse resp;
