@@ -152,16 +152,19 @@ void doMigrationPoint(int32_t entrypointFuncWasmOffset,
               getExecutingModule()->doThrowException(exc);
             }
 
-            // Use beginQuiesce as a write lock.
-            // TODO: This isn't really necessary Delete at some point
-            rpcContext->beginQuiesce();
-
             // Set proxy before migration.
-            registry.setForwardingAddress(call->id(), hostToMigrateTo);
+            rpcContext->setupForwarding(hostToMigrateTo);
 
             faabric::RpcMigrationState rpcMigrationState =
               rpcContext->serializeMigrationState();
 
+            SPDLOG_INFO("RPC - Serialising migration state for msg {}: "
+                        "{} channels, {} pending requests, frameOffset={} funcptr={}",
+                        call->id(),
+                        rpcMigrationState.channels_size(),
+                        rpcMigrationState.pendingrequests_size(),
+                        entrypointFuncArg,
+                        msg.funcptr());
             std::string serializedRpcState;
             if (!rpcMigrationState.SerializeToString(&serializedRpcState)) {
                 auto exc =
@@ -172,15 +175,8 @@ void doMigrationPoint(int32_t entrypointFuncWasmOffset,
             req->set_contextdata(serializedRpcState.data(),
                                  serializedRpcState.size());
 
+            SPDLOG_INFO("RPC - Removing context for {}", call->id());
             registry.removeContext(call->id());
-
-            SPDLOG_INFO("RPC - Serialising migration state for msg {}: "
-                        "{} channels, {} pending requests, frameOffset={} funcptr={}",
-                        call->id(),
-                        rpcMigrationState.channels_size(),
-                        rpcMigrationState.pendingrequests_size(),
-                        entrypointFuncArg,
-                        msg.funcptr());
         }
 
         if (call->recordexecgraph()) {
