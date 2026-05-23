@@ -2,6 +2,8 @@
 #include <faabric/rpc/rpc.h>
 #include <faabric/rpc/RpcContext.h>
 #include <faabric/rpc/RpcContextRegistry.h>
+#include <faabric/rpc/RpcServer.h>
+#include <faabric/transport/common.h>
 #include <faabric/util/bytes.h>
 #include <faabric/util/logging.h>
 #include <wamr/WAMRModuleMixin.h>
@@ -48,6 +50,30 @@ uint8_t* getBufferFromWasm(WAMRWasmModule* module,
         module->validateNativePointer(wasmPtr, len);
     }
     return reinterpret_cast<uint8_t*>(wasmPtr);
+}
+
+void writeStringToWasm(WAMRWasmModule* module,
+                       const std::string& src,
+                       int32_t* outOffsetPtr,
+                       int32_t* outLenPtr)
+{
+    void* nativePtr = nullptr;
+    uint32_t wasmOffset =
+        module->wasmModuleMalloc(src.size() + 1, &nativePtr);
+
+    if (nativePtr == nullptr && !src.empty()) {
+        throw std::runtime_error("Wasm heap allocation failed");
+    }
+
+    if (!src.empty()) {
+        std::memcpy(nativePtr, src.data(), src.size());
+    }
+    if (nativePtr != nullptr) {
+        static_cast<char*>(nativePtr)[src.size()] = '\0';
+    }
+
+    *outOffsetPtr = static_cast<int32_t>(wasmOffset);
+    *outLenPtr = static_cast<int32_t>(src.size());
 }
 
 // ------
@@ -261,6 +287,124 @@ static int32_t __faasm_rpc_get_response_wrapper(wasm_exec_env_t,
     }
 }
 
+static int32_t __faasm_rpc_send_response_wrapper(wasm_exec_env_t,
+                                                 uint32_t requestId,
+                                                 int32_t* replyHostPtr,
+                                                 int32_t replyPort,
+                                                 int32_t statusCode,
+                                                 int32_t* payloadPtr,
+                                                 int32_t payloadLen,
+                                                 int32_t* errorMsgPtr,
+                                                 int32_t errorMsgLen)
+{
+    auto* module = getExecutingWAMRModule();
+
+    if (payloadLen < 0 || errorMsgLen < 0) {
+        SPDLOG_WARN("RPC send_response: negative length");
+        return static_cast<int32_t>(Rpc_StatusCode::INVALID_ARGUMENT);
+    }
+
+    std::string replyHost = getStringFromWasm(module, replyHostPtr);
+    if (replyHost.empty() || replyPort <= 0) {
+        SPDLOG_WARN("RPC send_response: missing reply destination");
+        return static_cast<int32_t>(Rpc_StatusCode::INVALID_ARGUMENT);
+    }
+
+    uint8_t* payload = getBufferFromWasm(module, payloadPtr, payloadLen);
+
+    std::string errorMessage;
+    if (errorMsgLen > 0) {
+        errorMessage = getStringFromWasm(module, errorMsgPtr);
+    }
+
+    try {
+        faabric::RpcResponse resp;
+        resp.set_requestid(requestId);
+        resp.set_statuscode(statusCode);
+
+        if (payloadLen > 0) {
+            resp.set_payload(std::string(
+                reinterpret_cast<const char*>(payload), payloadLen));
+        }
+
+        if (!errorMessage.empty()) {
+            resp.set_errormessage(errorMessage);
+        }
+
+        // Local fast path: caller is on this host, skip the network and
+        // deliver straight to the registry.
+        if (replyHost == faabric::util::getSystemConfig().endpointHost) {
+            SPDLOG_DEBUG("RPC send_response {} - local fast path", requestId);
+            faabric::rpc::getRpcServer().deliverResponse(resp);
+        } else {
+            SPDLOG_DEBUG("RPC send_response {} - sending to {}:{}",
+                         requestId, replyHost, replyPort);
+            faabric::rpc::RpcTransportClient client(
+                replyHost, replyPort, RPC_SYNC_PORT, kRpcTimeoutMs);
+            client.asyncSendResponse(resp);
+        }
+
+        return static_cast<int32_t>(Rpc_StatusCode::OK);
+    } catch (const std::exception& e) {
+        return handleException(module, e, "send response");
+    }
+}
+
+static int32_t __faasm_rpc_get_request_wrapper(wasm_exec_env_t,
+                                               int32_t wasmResumeTarget,
+                                               int32_t frameOffset,
+                                               uint32_t* outRequestIdPtr,
+                                               int32_t* outMethodOffsetPtr,
+                                               int32_t* outMethodLenPtr,
+                                               int32_t* outPayloadOffsetPtr,
+                                               int32_t* outPayloadLenPtr,
+                                               int32_t* outReplyHostOffsetPtr,
+                                               int32_t* outReplyHostLenPtr,
+                                               int32_t* outReplyPortPtr)
+{
+    auto* module = getExecutingWAMRModule();
+
+    module->validateNativePointer(outRequestIdPtr, sizeof(uint32_t));
+    module->validateNativePointer(outMethodOffsetPtr, sizeof(int32_t));
+    module->validateNativePointer(outMethodLenPtr, sizeof(int32_t));
+    module->validateNativePointer(outPayloadOffsetPtr, sizeof(int32_t));
+    module->validateNativePointer(outPayloadLenPtr, sizeof(int32_t));
+    module->validateNativePointer(outReplyHostOffsetPtr, sizeof(int32_t));
+    module->validateNativePointer(outReplyHostLenPtr, sizeof(int32_t));
+    module->validateNativePointer(outReplyPortPtr, sizeof(int32_t));
+
+    try {
+        const auto& msg = faabric::executor::ExecutorContext::get()->getMsg();
+        
+        const int32_t appId = msg.appid();
+        const int32_t messageId = msg.id();
+
+        std::optional<faabric::rpc::PendingInvocation> inv;
+        while (true) {
+            wasm::doMigrationPoint(wasmResumeTarget, std::to_string(frameOffset));
+            inv = faabric::rpc::getRpcServer()
+                      .tryDequeueInvocation(appId, messageId);
+            if (inv.has_value()) {
+                break;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+
+        *outRequestIdPtr = inv->requestId;
+        writeStringToWasm(module, inv->method,
+                          outMethodOffsetPtr, outMethodLenPtr);
+        writeStringToWasm(module, inv->payload,
+                          outPayloadOffsetPtr, outPayloadLenPtr);
+        writeStringToWasm(module, inv->replyHost,
+                          outReplyHostOffsetPtr, outReplyHostLenPtr);
+        *outReplyPortPtr = inv->replyPort;
+
+        return static_cast<int32_t>(Rpc_StatusCode::OK);
+    } catch (const std::exception& e) {
+        return handleException(module, e, "get request");
+    }
+}
+
 static NativeSymbol ns[] = {
     REG_NATIVE_FUNC(Rpc_ChannelCreate, "(**)i"),
     REG_NATIVE_FUNC(Rpc_ChannelClose, "(i)i"),
@@ -268,6 +412,8 @@ static NativeSymbol ns[] = {
     REG_NATIVE_FUNC(__faasm_rpc_test_response, "(i)i"),
     REG_NATIVE_FUNC(__faasm_rpc_wait_migratable, "(iii)"),
     REG_NATIVE_FUNC(__faasm_rpc_get_response, "(i**)i"),
+    REG_NATIVE_FUNC(__faasm_rpc_send_response, "(i*ii*i*i)i"),
+    REG_NATIVE_FUNC(__faasm_rpc_get_request, "(ii********)i"),
 };
 
 uint32_t getFaasmRpcApi(NativeSymbol** nativeSymbols)
