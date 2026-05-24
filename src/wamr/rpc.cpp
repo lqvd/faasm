@@ -375,18 +375,42 @@ static int32_t __faasm_rpc_get_request_wrapper(wasm_exec_env_t,
 
     try {
         const auto& msg = faabric::executor::ExecutorContext::get()->getMsg();
-        
         const int32_t appId = msg.appid();
         const int32_t messageId = msg.id();
 
+        auto& server = faabric::rpc::getRpcServer();
+
+        constexpr auto migrationCheckInterval =
+            std::chrono::milliseconds(100);
+        auto nextMigrationCheck =
+            std::chrono::steady_clock::now() + migrationCheckInterval;
+
         std::optional<faabric::rpc::PendingInvocation> inv;
         while (true) {
-            wasm::doMigrationPoint(wasmResumeTarget, std::to_string(frameOffset));
-            inv = faabric::rpc::getRpcServer()
-                      .tryDequeueInvocation(appId, messageId);
+            auto now = std::chrono::steady_clock::now();
+            if (now >= nextMigrationCheck) {
+                wasm::doMigrationPoint(
+                  wasmResumeTarget, std::to_string(frameOffset));
+                nextMigrationCheck = now + migrationCheckInterval;
+            }
+
+            inv = server.tryDequeueInvocation(appId, messageId);
             if (inv.has_value()) {
                 break;
             }
+
+            if (server.isShutdownRequested(appId, messageId)) {
+                SPDLOG_INFO("RPC - Service app={} msg={} drained, "
+                            "returning CANCELLED",
+                            appId, messageId);
+                *outRequestIdPtr = 0;
+                *outMethodLenPtr = 0;
+                *outPayloadLenPtr = 0;
+                *outReplyHostLenPtr = 0;
+                *outReplyPortPtr = 0;
+                return static_cast<int32_t>(Rpc_StatusCode::CANCELLED);
+            }
+
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
 

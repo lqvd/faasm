@@ -4,6 +4,7 @@
 #include <faabric/mpi/MpiWorldRegistry.h>
 #include <faabric/rpc/RpcContext.h>
 #include <faabric/rpc/RpcContextRegistry.h>
+#include <faabric/rpc/RpcServer.h>
 #include <faabric/scheduler/FunctionCallClient.h>
 #include <faabric/scheduler/Scheduler.h>
 #include <faabric/snapshot/SnapshotClient.h>
@@ -141,7 +142,9 @@ void doMigrationPoint(int32_t entrypointFuncWasmOffset,
         if (call->isrpc()) {
             msg.set_isrpc(true);
             msg.set_rpcservice(call->rpcservice());
-            msg.set_rpcreplyid(call->rpcreplyid());
+            msg.set_rpcrequestid(call->rpcrequestid());
+            msg.set_rpcreplyhost(call->rpcreplyhost());
+            msg.set_rpcreplyport(call->rpcreplyport());
 
             auto& registry = faabric::rpc::getRpcContextRegistry();
             std::shared_ptr<faabric::rpc::RpcContext> rpcContext =
@@ -177,6 +180,14 @@ void doMigrationPoint(int32_t entrypointFuncWasmOffset,
 
             SPDLOG_INFO("RPC - Removing context for {}", call->id());
             registry.removeContext(call->id());
+        }
+
+        if (call->islongrunning()) {
+            faabric::rpc::getRpcServer().migrateServiceQueue(
+              call->appid(),
+              call->id(),
+              hostToMigrateTo,
+              std::chrono::seconds(30));
         }
 
         if (call->recordexecgraph()) {
