@@ -82,8 +82,8 @@ void writeStringToWasm(WAMRWasmModule* module,
 
 std::shared_ptr<RpcContext> getCurrentContext()
 {
-    int32_t msgId = faabric::executor::ExecutorContext::get()->getMsg().id();
-    return getRpcContextRegistry().getContext(msgId);
+    auto msg = faabric::executor::ExecutorContext::get()->getMsg();
+    return getRpcContextRegistry().getContext(msg.appid(), msg.id());
 }
 
 int32_t handleException(WAMRWasmModule* module,

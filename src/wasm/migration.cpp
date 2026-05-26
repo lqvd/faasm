@@ -148,7 +148,7 @@ void doMigrationPoint(int32_t entrypointFuncWasmOffset,
 
             auto& registry = faabric::rpc::getRpcContextRegistry();
             std::shared_ptr<faabric::rpc::RpcContext> rpcContext =
-              registry.getContext(call->id());
+              registry.getContext(call->appid(), call->id());
             if (!rpcContext) {
               auto exc = std::runtime_error(
                 "No RPC context found for migrating message");
@@ -179,7 +179,7 @@ void doMigrationPoint(int32_t entrypointFuncWasmOffset,
                                  serializedRpcState.size());
 
             SPDLOG_INFO("RPC - Removing context for {}", call->id());
-            registry.removeContext(call->id());
+            registry.removeContext(call->appid(), call->id());
         }
 
         if (call->islongrunning()) {
