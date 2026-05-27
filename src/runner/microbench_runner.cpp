@@ -5,8 +5,8 @@
 #include <runner/MicrobenchRunner.h>
 #include <storage/S3Wrapper.h>
 
+#include <faabric/executor/ExecutorFactory.h>
 #include <faabric/runner/FaabricMain.h>
-#include <faabric/scheduler/ExecutorFactory.h>
 #include <faabric/scheduler/Scheduler.h>
 #include <faabric/util/config.h>
 #include <faabric/util/logging.h>
