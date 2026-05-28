@@ -40,11 +40,17 @@ TEST_CASE_METHOD(DistTestsFixture,
     plannerCli.preloadSchedulingDecision(svcDec);
     plannerCli.callFunctions(svcReq);
 
-    // Give the service time to register itself (planner registers via callBatch)
-    SLEEP_MS(500);
+    // Give the service time to register itself
+    std::optional<faabric::planner::ServiceEndpoint> endpoint;
+    for (int i = 0; i < 50; i++) {
+        endpoint = plannerCli.resolveServiceEndpoint("rpc/PingSvc");
+        if (endpoint.has_value()) {
+            break;
+        }
 
-    // Verify discovery finds it
-    auto endpoint = plannerCli.resolveServiceEndpoint("rpc/PingSvc");
+        SLEEP_MS(100);
+    }
+
     REQUIRE(endpoint.has_value());
     REQUIRE(endpoint->host() == getDistTestMasterIp());
 
