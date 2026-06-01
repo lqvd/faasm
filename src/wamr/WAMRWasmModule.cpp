@@ -201,7 +201,9 @@ void WAMRWasmModule::doBindToFunction(faabric::Message& msg, bool cache)
 }
 
 namespace {
-std::string bytesToHexPreview(const uint8_t* data, size_t len, size_t maxLen = 32)
+std::string bytesToHexPreview(const uint8_t* data,
+                              size_t len,
+                              size_t maxLen = 32)
 {
     std::ostringstream oss;
     size_t n = std::min(len, maxLen);
@@ -219,7 +221,8 @@ std::string bytesToHexPreview(const uint8_t* data, size_t len, size_t maxLen = 3
 
 std::string simpleByteFingerprint(const std::vector<uint8_t>& bytes)
 {
-    // Not cryptographic. Just enough to tell whether the loaded artifact changed.
+    // Not cryptographic. Just enough to tell whether the loaded artifact
+    // changed.
     uint64_t h = 1469598103934665603ULL;
     for (auto b : bytes) {
         h ^= static_cast<uint64_t>(b);
@@ -240,14 +243,14 @@ void WAMRWasmModule::bindInternal(faabric::Message& msg)
     // RAII-handle around WAMR's thread environment
     WAMRThreadEnv threadEnv;
 
-    SPDLOG_INFO(
-      "Instantiating WAMR module for {}/{} with STACK_SIZE_KB={} and app_heap_size=0 "
-      "(artifact bytes={}, fingerprint={})",
-      msg.user(),
-      msg.function(),
-      STACK_SIZE_KB,
-      wasmBytes.size(),
-      simpleByteFingerprint(wasmBytes));
+    SPDLOG_INFO("Instantiating WAMR module for {}/{} with STACK_SIZE_KB={} and "
+                "app_heap_size=0 "
+                "(artifact bytes={}, fingerprint={})",
+                msg.user(),
+                msg.function(),
+                STACK_SIZE_KB,
+                wasmBytes.size(),
+                simpleByteFingerprint(wasmBytes));
 
     // Instantiate module. Set the app-managed heap size to 0 to use
     // wasi-libc's managed heap. See:
@@ -257,7 +260,7 @@ void WAMRWasmModule::bindInternal(faabric::Message& msg)
     args.host_managed_heap_size = 0;
     args.max_memory_pages = MAX_WASM_MEMORY_PAGES;
     moduleInstance = wasm_runtime_instantiate_ex(
-        wasmModule, &args, errorBuffer, ERROR_BUFFER_SIZE);
+      wasmModule, &args, errorBuffer, ERROR_BUFFER_SIZE);
 
     if (moduleInstance == nullptr) {
         SPDLOG_ERROR("WAMR module instantiation failed: {}", errorBuffer);
@@ -268,15 +271,14 @@ void WAMRWasmModule::bindInternal(faabric::Message& msg)
     auto* aotModule = reinterpret_cast<AOTModuleInstance*>(moduleInstance);
     AOTMemoryInstance* aotMem = ((AOTMemoryInstance**)aotModule->memories)[0];
 
-    SPDLOG_INFO(
-      "WAMR memory for {}/{}: cur_page_count={}, max_page_count={}, "
-      "num_bytes_per_page={}, memory_data={}",
-      msg.user(),
-      msg.function(),
-      aotMem->cur_page_count,
-      aotMem->max_page_count,
-      aotMem->num_bytes_per_page,
-      fmt::ptr(aotMem->memory_data));
+    SPDLOG_INFO("WAMR memory for {}/{}: cur_page_count={}, max_page_count={}, "
+                "num_bytes_per_page={}, memory_data={}",
+                msg.user(),
+                msg.function(),
+                aotMem->cur_page_count,
+                aotMem->max_page_count,
+                aotMem->num_bytes_per_page,
+                fmt::ptr(aotMem->memory_data));
 
     if (aotMem->num_bytes_per_page != WASM_BYTES_PER_PAGE) {
         SPDLOG_ERROR("WAMR module bytes per page wrong, {} != {}, overriding",

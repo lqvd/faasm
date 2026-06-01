@@ -1,9 +1,9 @@
 #include <faabric/executor/ExecutorContext.h>
-#include <faabric/rpc/rpc.h>
 #include <faabric/rpc/RpcContext.h>
 #include <faabric/rpc/RpcContextRegistry.h>
 #include <faabric/rpc/RpcServer.h>
 #include <faabric/rpc/RpcTransportClient.h>
+#include <faabric/rpc/rpc.h>
 #include <faabric/transport/common.h>
 #include <faabric/util/bytes.h>
 #include <faabric/util/logging.h>
@@ -24,11 +24,14 @@
 
 using namespace faabric::rpc;
 
-#define RPC_CATCH_RETURN(op)                                              \
-    catch (const std::bad_alloc& e) {                                     \
-        return logAndReturn(e, op, Rpc_StatusCode::RESOURCE_EXHAUSTED);   \
-    } catch (const std::exception& e) {                                   \
-        return logAndReturn(e, op);                                       \
+#define RPC_CATCH_RETURN(op)                                                   \
+    catch (const std::bad_alloc& e)                                            \
+    {                                                                          \
+        return logAndReturn(e, op, Rpc_StatusCode::RESOURCE_EXHAUSTED);        \
+    }                                                                          \
+    catch (const std::exception& e)                                            \
+    {                                                                          \
+        return logAndReturn(e, op);                                            \
     }
 
 namespace wasm {
@@ -96,9 +99,9 @@ class WasmAbi
             return {};
         }
         char* p = reinterpret_cast<char*>(wasmPtr);
-        size_t maxLen = module->getMemorySizeBytes() -
-                        (reinterpret_cast<uint8_t*>(wasmPtr) -
-                         module->getMemoryBase());
+        size_t maxLen =
+          module->getMemorySizeBytes() -
+          (reinterpret_cast<uint8_t*>(wasmPtr) - module->getMemoryBase());
         size_t len = strnlen(p, maxLen);
         if (!validate(wasmPtr, len + 1, what)) {
             return {};
@@ -114,8 +117,7 @@ class WasmAbi
             return nullptr;
         }
         if (len < 0) {
-            throwAbi(module,
-                     std::string("Negative buffer length for ") + what);
+            throwAbi(module, std::string("Negative buffer length for ") + what);
             failed = true;
             return nullptr;
         }
@@ -149,8 +151,8 @@ class WasmAbi
         }
 
         void* native = nullptr;
-        uint32_t offset = module->wasmModuleMalloc(
-          static_cast<uint32_t>(allocLen), &native);
+        uint32_t offset =
+          module->wasmModuleMalloc(static_cast<uint32_t>(allocLen), &native);
         if (native == nullptr) {
             return static_cast<int32_t>(Rpc_StatusCode::RESOURCE_EXHAUSTED);
         }
@@ -378,8 +380,8 @@ static int32_t __faasm_rpc_get_response_wrapper(wasm_exec_env_t,
 
         if (resp.statuscode() != Rpc_StatusCode::OK) {
             if (!resp.errormessage().empty()) {
-                int32_t w = abi.writeString(
-                  resp.errormessage(), outErrOffset, outErrLen);
+                int32_t w =
+                  abi.writeString(resp.errormessage(), outErrOffset, outErrLen);
                 if (w != static_cast<int32_t>(Rpc_StatusCode::OK)) {
                     return w;
                 }
@@ -389,10 +391,10 @@ static int32_t __faasm_rpc_get_response_wrapper(wasm_exec_env_t,
 
         const std::string& payload = resp.payload();
         return abi.writeBytes(reinterpret_cast<const uint8_t*>(payload.data()),
-                             payload.size(),
-                             outRespOffset,
-                             outRespLen,
-                             /*nullTerminate=*/false);
+                              payload.size(),
+                              outRespOffset,
+                              outRespLen,
+                              /*nullTerminate=*/false);
     }
     RPC_CATCH_RETURN("get response")
 }
@@ -433,14 +435,14 @@ static int32_t __faasm_rpc_send_response_wrapper(wasm_exec_env_t,
         resp.set_requestid(requestId);
         resp.set_statuscode(statusCodeIn);
         if (payloadLen > 0) {
-            resp.set_payload(std::string(
-              reinterpret_cast<const char*>(payloadBuf),
-              static_cast<size_t>(payloadLen)));
+            resp.set_payload(
+              std::string(reinterpret_cast<const char*>(payloadBuf),
+                          static_cast<size_t>(payloadLen)));
         }
         if (errorMsgLen > 0) {
-            resp.set_errormessage(std::string(
-              reinterpret_cast<const char*>(errorBuf),
-              static_cast<size_t>(errorMsgLen)));
+            resp.set_errormessage(
+              std::string(reinterpret_cast<const char*>(errorBuf),
+                          static_cast<size_t>(errorMsgLen)));
         }
 
         if (replyHostStr == faabric::util::getSystemConfig().endpointHost) {
@@ -448,8 +450,8 @@ static int32_t __faasm_rpc_send_response_wrapper(wasm_exec_env_t,
             try {
                 faabric::rpc::getRpcServer().deliverResponse(resp);
             } catch (const std::exception& e) {
-                return logAndReturn(e, "local response delivery", 
-                                    Rpc_StatusCode::UNAVAILABLE);
+                return logAndReturn(
+                  e, "local response delivery", Rpc_StatusCode::UNAVAILABLE);
             }
         } else {
             SPDLOG_DEBUG("RPC send_response req={} remote {}:{}",
@@ -528,9 +530,8 @@ static int32_t __faasm_rpc_get_request_wrapper(wasm_exec_env_t,
                 break;
             }
             if (server.isShutdownRequested(appId, messageId)) {
-                SPDLOG_INFO("RPC get_request app={} msg={} drained",
-                            appId,
-                            messageId);
+                SPDLOG_INFO(
+                  "RPC get_request app={} msg={} drained", appId, messageId);
                 return static_cast<int32_t>(Rpc_StatusCode::CANCELLED);
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -539,8 +540,8 @@ static int32_t __faasm_rpc_get_request_wrapper(wasm_exec_env_t,
         *outRequestId = inv->requestId;
         *outReplyPort = inv->replyPort;
 
-        if (int32_t s = abi.writeString(
-              inv->method, outMethodOffset, outMethodLen);
+        if (int32_t s =
+              abi.writeString(inv->method, outMethodOffset, outMethodLen);
             s != static_cast<int32_t>(Rpc_StatusCode::OK)) {
             return s;
         }

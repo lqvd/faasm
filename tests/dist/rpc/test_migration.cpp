@@ -1,9 +1,9 @@
-#include <catch2/catch.hpp>
 #include "fixtures.h"
-#include <faabric/scheduler/Scheduler.h>
-#include <faabric/util/batch.h>
-#include <faabric/transport/common.h>
+#include <catch2/catch.hpp>
 #include <faabric/rpc/RpcTransportClient.h>
+#include <faabric/scheduler/Scheduler.h>
+#include <faabric/transport/common.h>
+#include <faabric/util/batch.h>
 
 namespace tests {
 
@@ -11,11 +11,11 @@ class RpcDistTestsFixture : public DistTestsFixture
 {
   protected:
     void setupRpcMigrationTest(
-        std::shared_ptr<faabric::BatchExecuteRequest> req,
-        const std::string& hostBefore)
+      std::shared_ptr<faabric::BatchExecuteRequest> req,
+      const std::string& hostBefore)
     {
         auto preloadDec = std::make_shared<batch_scheduler::SchedulingDecision>(
-            req->appid(), req->groupid());
+          req->appid(), req->groupid());
         preloadDec->addMessage(hostBefore, 0, 0, 0);
         plannerCli.preloadSchedulingDecision(preloadDec);
         setNextEvictedVmIp({ hostBefore });
@@ -33,9 +33,9 @@ TEST_CASE_METHOD(DistTestsFixture,
     svcReq->set_type(faabric::BatchExecuteRequest::SERVICE);
     faabric::Message& msg = svcReq->mutable_messages()->at(0);
     msg.set_isrpc(true);
-    
+
     auto svcDec = std::make_shared<batch_scheduler::SchedulingDecision>(
-        svcReq->appid(), svcReq->groupid());
+      svcReq->appid(), svcReq->groupid());
     svcDec->addMessage(getDistTestMasterIp(), 0, 0, 0);
     plannerCli.preloadSchedulingDecision(svcDec);
     plannerCli.callFunctions(svcReq);
@@ -67,13 +67,14 @@ TEST_CASE_METHOD(DistTestsFixture,
     // Verify all four pings made it into the output
     const auto& output = clientResults->messageresults(0).outputdata();
     REQUIRE(output.find("Pong: Hello from host A") != std::string::npos);
-    REQUIRE(output.find("Pong: Hello from wherever we are now") != std::string::npos);
+    REQUIRE(output.find("Pong: Hello from wherever we are now") !=
+            std::string::npos);
     REQUIRE(output.find("Pong: Fan-out C") != std::string::npos);
     REQUIRE(output.find("Pong: Fan-out D") != std::string::npos);
 
-     // Tell the service to shut down
+    // Tell the service to shut down
     faabric::rpc::RpcTransportClient ctrl(
-        endpoint->host(), RPC_ASYNC_PORT, RPC_SYNC_PORT, 5000);
+      endpoint->host(), RPC_ASYNC_PORT, RPC_SYNC_PORT, 5000);
 
     faabric::RpcShutdownRequest shutdownReq;
     shutdownReq.set_targetappid(endpoint->appid());

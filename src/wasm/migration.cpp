@@ -150,9 +150,9 @@ void doMigrationPoint(int32_t entrypointFuncWasmOffset,
             std::shared_ptr<faabric::rpc::RpcContext> rpcContext =
               registry.getContext(call->appid(), call->id());
             if (!rpcContext) {
-              auto exc = std::runtime_error(
-                "No RPC context found for migrating message");
-              getExecutingModule()->doThrowException(exc);
+                auto exc = std::runtime_error(
+                  "No RPC context found for migrating message");
+                getExecutingModule()->doThrowException(exc);
             }
 
             // Set proxy before migration.
@@ -161,13 +161,14 @@ void doMigrationPoint(int32_t entrypointFuncWasmOffset,
             faabric::RpcMigrationState rpcMigrationState =
               rpcContext->serializeMigrationState();
 
-            SPDLOG_INFO("RPC - Serialising migration state for msg {}: "
-                        "{} channels, {} pending requests, frameOffset={} funcptr={}",
-                        call->id(),
-                        rpcMigrationState.channels_size(),
-                        rpcMigrationState.pendingrequests_size(),
-                        entrypointFuncArg,
-                        msg.funcptr());
+            SPDLOG_INFO(
+              "RPC - Serialising migration state for msg {}: "
+              "{} channels, {} pending requests, frameOffset={} funcptr={}",
+              call->id(),
+              rpcMigrationState.channels_size(),
+              rpcMigrationState.pendingrequests_size(),
+              entrypointFuncArg,
+              msg.funcptr());
             std::string serializedRpcState;
             if (!rpcMigrationState.SerializeToString(&serializedRpcState)) {
                 auto exc =
