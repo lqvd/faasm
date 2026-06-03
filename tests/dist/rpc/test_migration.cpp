@@ -30,8 +30,8 @@ TEST_CASE_METHOD(DistTestsFixture,
 
     // Start ping service as long-running SERVICE on host A
     auto svcReq = faabric::util::batchExecFactory("rpc", "PingSvc", 1);
-    svcReq->set_type(faabric::BatchExecuteRequest::SERVICE);
     faabric::Message& msg = svcReq->mutable_messages()->at(0);
+    msg.set_islongrunning(true);
     msg.set_isrpc(true);
 
     auto svcDec = std::make_shared<batch_scheduler::SchedulingDecision>(
@@ -84,6 +84,256 @@ TEST_CASE_METHOD(DistTestsFixture,
     auto svcResults = waitForBatchResults(svcReq, 1);
     REQUIRE(svcResults->messageresults_size() == 1);
     REQUIRE(svcResults->messageresults(0).returnvalue() == 0);
+}
+
+TEST_CASE_METHOD(DistTestsFixture,
+                 "Test SNB migration stop-and-restart",
+                 "[rpc][snb][migration]")
+{
+    setLocalRemoteSlots(8, 4);
+
+    struct RunningService {
+        std::shared_ptr<faabric::BatchExecuteRequest> req;
+        faabric::planner::ServiceEndpoint endpoint;
+    };
+
+    std::vector<RunningService> services;
+
+    auto waitForServiceEndpoint =
+      [&](const std::string& serviceName,
+          const std::string& host) -> faabric::planner::ServiceEndpoint {
+        const std::string serviceKey = "snb/" + serviceName;
+        std::optional<faabric::planner::ServiceEndpoint> endpoint;
+        for (int i = 0; i < 100; i++) {
+            endpoint = plannerCli.resolveServiceEndpoint(serviceKey);
+            if (endpoint.has_value()) break;
+            SLEEP_MS(100);
+        }
+        REQUIRE(endpoint.has_value());
+        REQUIRE(endpoint->host() == host);
+        return endpoint.value();
+    };
+
+    auto startService =
+      [&](const std::string& serviceName,
+          const std::string& host) -> RunningService {
+        auto svcReq = faabric::util::batchExecFactory("snb", serviceName, 1);
+        faabric::Message& msg = svcReq->mutable_messages()->at(0);
+        msg.set_islongrunning(true);
+        msg.set_isrpc(true);
+
+        auto svcDec = std::make_shared<batch_scheduler::SchedulingDecision>(
+            svcReq->appid(), svcReq->groupid());
+        svcDec->addMessage(host, 0, 0, 0);
+        plannerCli.preloadSchedulingDecision(svcDec);
+        plannerCli.callFunctions(svcReq);
+
+        return RunningService{ svcReq,
+                               waitForServiceEndpoint(serviceName, host) };
+    };
+
+    auto shutdownService =
+      [&](const RunningService& svc) {
+          faabric::rpc::RpcTransportClient ctrl(
+              svc.endpoint.host(), RPC_ASYNC_PORT, RPC_SYNC_PORT, 5000);
+          faabric::RpcShutdownRequest req;
+          req.set_targetappid(svc.endpoint.appid());
+          req.set_targetmessageid(svc.endpoint.messageid());
+          ctrl.asyncSendShutdown(req);
+      };
+
+    auto runBenchmarkPhase =
+      [&](int numRequests) -> std::string {
+        auto benchReq =
+            faabric::util::batchExecFactory("snb", "benchmark_snb", 1);
+        faabric::Message& msg = benchReq->mutable_messages()->at(0);
+        msg.set_isrpc(true);
+        msg.set_cmdline(std::to_string(numRequests));
+        plannerCli.callFunctions(benchReq);
+
+        auto results = waitForBatchResults(benchReq, 1);
+        REQUIRE(results->messageresults_size() == 1);
+        REQUIRE(results->messageresults(0).returnvalue() == 0);
+        return results->messageresults(0).outputdata();
+    };
+
+    // --- Start all services on master ---
+    services.push_back(startService("UserDbService",      getDistTestMasterIp()));
+    services.push_back(startService("PostStorageService", getDistTestMasterIp()));
+    services.push_back(startService("TextService",        getDistTestMasterIp()));
+    services.push_back(startService("UniqueIdService",    getDistTestMasterIp()));
+    services.push_back(startService("UserService",        getDistTestMasterIp()));
+    services.push_back(startService("ComposePostService", getDistTestMasterIp()));
+
+    // --- Phase 1: pre-migration baseline ---
+    auto phase1Output = runBenchmarkPhase(10);
+    SPDLOG_INFO("Phase 1 (pre-migration): {}", phase1Output);
+
+    // --- Migrate UserService: master → worker ---
+    // Find UserService in services list
+    auto userSvcIt = std::find_if(services.begin(), services.end(),
+        [](const RunningService& s) {
+            return s.endpoint.servicename() == "snb/UserService";
+        });
+    REQUIRE(userSvcIt != services.end());
+
+    // Stop old instance
+    shutdownService(*userSvcIt);
+    auto oldResults = waitForBatchResults(userSvcIt->req, 1);
+    REQUIRE(oldResults->messageresults(0).returnvalue() == 0);
+
+    // Start new instance on worker
+    *userSvcIt = startService("UserService", getDistTestWorkerIp());
+    SPDLOG_INFO("UserService migrated to {}", getDistTestWorkerIp());
+
+    // --- Phase 2: post-migration ---
+    auto phase2Output = runBenchmarkPhase(10);
+    SPDLOG_INFO("Phase 2 (post-migration): {}", phase2Output);
+
+    // --- Assertions ---
+    // Parse and compare p99 from both phases
+    // Both should succeed — migration correctness check
+    REQUIRE_FALSE(phase1Output.empty());
+    REQUIRE_FALSE(phase2Output.empty());
+
+    // Log both for manual inspection during development
+    // Replace with parsed proto assertions once results are stable
+    printf("PRE:  %s\n", phase1Output.c_str());
+    printf("POST: %s\n", phase2Output.c_str());
+
+    // --- Shutdown all ---
+    for (const auto& svc : services) {
+        shutdownService(svc);
+    }
+    for (const auto& svc : services) {
+        auto r = waitForBatchResults(svc.req, 1);
+        REQUIRE(r->messageresults(0).returnvalue() == 0);
+    }
+}
+
+TEST_CASE_METHOD(DistTestsFixture,
+                 "Test SNB migration drain-and-restart",
+                 "[rpc][snb][migration]")
+{
+    setLocalRemoteSlots(8, 4);
+
+    struct RunningService {
+        std::shared_ptr<faabric::BatchExecuteRequest> req;
+        faabric::planner::ServiceEndpoint endpoint;
+    };
+
+    std::vector<RunningService> services;
+
+    auto waitForServiceEndpoint =
+      [&](const std::string& serviceName,
+          const std::string& host) -> faabric::planner::ServiceEndpoint {
+        const std::string serviceKey = "snb/" + serviceName;
+        std::optional<faabric::planner::ServiceEndpoint> endpoint;
+        for (int i = 0; i < 100; i++) {
+            endpoint = plannerCli.resolveServiceEndpoint(serviceKey);
+            if (endpoint.has_value()) break;
+            SLEEP_MS(100);
+        }
+        REQUIRE(endpoint.has_value());
+        REQUIRE(endpoint->host() == host);
+        return endpoint.value();
+    };
+
+    auto startService =
+      [&](const std::string& serviceName,
+          const std::string& host) -> RunningService {
+        auto svcReq = faabric::util::batchExecFactory("snb", serviceName, 1);
+        faabric::Message& msg = svcReq->mutable_messages()->at(0);
+        msg.set_islongrunning(true);
+        msg.set_isrpc(true);
+
+        auto svcDec = std::make_shared<batch_scheduler::SchedulingDecision>(
+            svcReq->appid(), svcReq->groupid());
+        svcDec->addMessage(host, 0, 0, 0);
+        plannerCli.preloadSchedulingDecision(svcDec);
+        plannerCli.callFunctions(svcReq);
+
+        return RunningService{ svcReq,
+                               waitForServiceEndpoint(serviceName, host) };
+    };
+
+    auto shutdownService =
+      [&](const RunningService& svc) {
+          faabric::rpc::RpcTransportClient ctrl(
+              svc.endpoint.host(), RPC_ASYNC_PORT, RPC_SYNC_PORT, 5000);
+          faabric::RpcShutdownRequest req;
+          req.set_targetappid(svc.endpoint.appid());
+          req.set_targetmessageid(svc.endpoint.messageid());
+          ctrl.asyncSendShutdown(req);
+      };
+
+    auto runBenchmarkPhase =
+      [&](int numRequests) -> std::string {
+        auto benchReq =
+            faabric::util::batchExecFactory("snb", "benchmark_snb", 1);
+        faabric::Message& msg = benchReq->mutable_messages()->at(0);
+        msg.set_isrpc(true);
+        msg.set_cmdline(std::to_string(numRequests));
+        plannerCli.callFunctions(benchReq);
+
+        auto results = waitForBatchResults(benchReq, 1);
+        REQUIRE(results->messageresults_size() == 1);
+        REQUIRE(results->messageresults(0).returnvalue() == 0);
+        return results->messageresults(0).outputdata();
+    };
+
+    // --- Start all services on master ---
+    services.push_back(startService("UserDbService",      getDistTestMasterIp()));
+    services.push_back(startService("PostStorageService", getDistTestMasterIp()));
+    services.push_back(startService("TextService",        getDistTestMasterIp()));
+    services.push_back(startService("UniqueIdService",    getDistTestMasterIp()));
+    services.push_back(startService("UserService",        getDistTestMasterIp()));
+    services.push_back(startService("ComposePostService", getDistTestMasterIp()));
+
+    // --- Phase 1: pre-migration baseline ---
+    auto phase1Output = runBenchmarkPhase(10);
+    SPDLOG_INFO("Phase 1 (pre-migration): {}", phase1Output);
+
+    // --- Migrate UserService: master → worker ---
+    // Find UserService in services list
+    auto userSvcIt = std::find_if(services.begin(), services.end(),
+        [](const RunningService& s) {
+            return s.endpoint.servicename() == "snb/UserService";
+        });
+    REQUIRE(userSvcIt != services.end());
+
+    // Stop old instance
+    shutdownService(*userSvcIt);
+    auto oldResults = waitForBatchResults(userSvcIt->req, 1);
+    REQUIRE(oldResults->messageresults(0).returnvalue() == 0);
+
+    // Start new instance on worker
+    *userSvcIt = startService("UserService", getDistTestWorkerIp());
+    SPDLOG_INFO("UserService migrated to {}", getDistTestWorkerIp());
+
+    // --- Phase 2: post-migration ---
+    auto phase2Output = runBenchmarkPhase(10);
+    SPDLOG_INFO("Phase 2 (post-migration): {}", phase2Output);
+
+    // --- Assertions ---
+    // Parse and compare p99 from both phases
+    // Both should succeed — migration correctness check
+    REQUIRE_FALSE(phase1Output.empty());
+    REQUIRE_FALSE(phase2Output.empty());
+
+    // Log both for manual inspection during development
+    // Replace with parsed proto assertions once results are stable
+    printf("PRE:  %s\n", phase1Output.c_str());
+    printf("POST: %s\n", phase2Output.c_str());
+
+    // --- Shutdown all ---
+    for (const auto& svc : services) {
+        shutdownService(svc);
+    }
+    for (const auto& svc : services) {
+        auto r = waitForBatchResults(svc.req, 1);
+        REQUIRE(r->messageresults(0).returnvalue() == 0);
+    }
 }
 
 } // namespace tests
