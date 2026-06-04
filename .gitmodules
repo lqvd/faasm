@@ -7,3 +7,6 @@
 [submodule "clients/cpp"]
 	path = clients/cpp
 	url = https://github.com/lqvd/cpp.git
+[submodule "faasmctl"]
+	path = faasmctl
+	url = https://github.com/lqvd/faasmctl
