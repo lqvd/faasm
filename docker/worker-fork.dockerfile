@@ -1,5 +1,4 @@
 FROM ghcr.io/lqvd/cli:0.33.0 AS collector
-
 RUN cd /usr/local/code/faasm \
     && ./bin/create_venv.sh \
     && source venv/bin/activate \
@@ -22,6 +21,9 @@ RUN apt update && apt install -y dnsutils
 RUN ln -s /build/faasm/release/bin /build/faasm/bin
 COPY --from=collector /usr/local/faasm/runtime_root /usr/local/faasm/runtime_root
 COPY --from=collector /usr/local/code/faasm/bin/entrypoint_worker.sh /usr/local/code/faasm/bin/entrypoint_worker.sh
+COPY --from=collector /usr/local/code/faasm/bin/entrypoint_codegen.sh /usr/local/code/faasm/bin/entrypoint_codegen.sh
+COPY --from=collector /usr/local/code/faasm/bin/netns.sh /usr/local/code/faasm/bin/netns.sh
+COPY --from=collector /usr/local/code/faasm/bin/cgroup.sh /usr/local/code/faasm/bin/cgroup.sh
 RUN groupadd -g 1001 faasm && useradd -u 1001 -g 1001 faasm
 ENTRYPOINT ["/usr/local/code/faasm/bin/entrypoint_worker.sh"]
 CMD ["/build/faasm/bin/pool_runner"]
