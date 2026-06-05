@@ -29,6 +29,9 @@ fi
 pip_cmd install -U pip setuptools wheel
 pip_cmd install -r requirements.txt
 
+pip install -q -e ${PROJ_ROOT}/faasmctl
+python ${PROJ_ROOT}/faasmctl/faasmctl/bin/gen_proto_files.py
+
 pushd clients/cpp >> /dev/null
 pip_cmd install -e .
 popd >> /dev/null
