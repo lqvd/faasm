@@ -1,4 +1,5 @@
 FROM ghcr.io/lqvd/cli:0.33.0 AS collector
+
 RUN cd /usr/local/code/faasm \
     && ./bin/create_venv.sh \
     && source venv/bin/activate \

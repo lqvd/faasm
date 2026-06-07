@@ -21,6 +21,7 @@ spec:
   containers:
     - name: planner
       image: ghcr.io/lqvd/planner:0.22.0
+      imagePullPolicy: Always
       ports:
         - containerPort: 8081
       env:
