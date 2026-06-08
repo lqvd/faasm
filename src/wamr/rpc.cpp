@@ -328,12 +328,16 @@ static int32_t __faasm_rpc_wait_migratable_wrapper(wasm_exec_env_t,
     }
 
     try {
+        const auto deadline = std::chrono::steady_clock::now() +
+                      std::chrono::milliseconds(kRpcTimeoutMs * 4);
         while (true) {
-            wasm::doMigrationPoint(wasmResumeTarget,
-                                   std::to_string(frameOffset));
+            wasm::doMigrationPoint(wasmResumeTarget, std::to_string(frameOffset));
             if (ctx->testResponse(requestId)) {
-                SPDLOG_INFO("RPC wait_migratable req={} ready", requestId);
                 return static_cast<int32_t>(Rpc_StatusCode::OK);
+            }
+            if (std::chrono::steady_clock::now() >= deadline) {
+                SPDLOG_WARN("RPC wait_migratable req={} timed out", requestId);
+                return static_cast<int32_t>(Rpc_StatusCode::DEADLINE_EXCEEDED);
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
@@ -413,7 +417,8 @@ static int32_t __faasm_rpc_send_response_wrapper(wasm_exec_env_t,
     WasmAbi abi(module);
 
     if (replyPort <= 0) {
-        return throwAbi(module, "send_response: invalid reply port");
+        return throwAbi(module, "send_response: invalid reply port "
+                            + std::to_string(replyPort));
     }
 
     std::string replyHostStr = abi.readString(replyHost, "reply host");

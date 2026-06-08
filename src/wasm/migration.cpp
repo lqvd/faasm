@@ -141,6 +141,7 @@ void doMigrationPoint(int32_t entrypointFuncWasmOffset,
         // RPC migration context (channels and targets) and add to payload
         if (call->isrpc()) {
             msg.set_isrpc(true);
+            msg.set_islongrunning(call->islongrunning());
             msg.set_rpcservice(call->rpcservice());
             msg.set_rpcrequestid(call->rpcrequestid());
             msg.set_rpcreplyhost(call->rpcreplyhost());
@@ -179,16 +180,16 @@ void doMigrationPoint(int32_t entrypointFuncWasmOffset,
             req->set_contextdata(serializedRpcState.data(),
                                  serializedRpcState.size());
 
+            if (call->islongrunning()) {
+                faabric::rpc::getRpcServer().beginServiceQueueMigration(
+                  call->appid(),
+                  call->id(),
+                  std::chrono::milliseconds(faabric::rpc::kRpcTimeoutMs));
+            }
+
+
             SPDLOG_INFO("RPC - Removing context for {}", call->id());
             registry.removeContext(call->appid(), call->id());
-        }
-
-        if (call->islongrunning()) {
-            faabric::rpc::getRpcServer().migrateServiceQueue(
-              call->appid(),
-              call->id(),
-              hostToMigrateTo,
-              std::chrono::seconds(30));
         }
 
         if (call->recordexecgraph()) {

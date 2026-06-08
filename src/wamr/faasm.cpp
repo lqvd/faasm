@@ -225,6 +225,19 @@ static void __faasm_write_output_wrapper(wasm_exec_env_t exec_env,
     call.set_outputdata(outBuff, outLen);
 }
 
+/**
+ * Set the function output (raw bytes)
+ */
+static void __faasm_write_raw_output_bytes_wrapper(wasm_exec_env_t exec_env,
+                                                   uint8_t* outBuff,
+                                                   int32_t outLen)
+{
+    SPDLOG_TRACE("S - faasm_write_raw_output_bytes {} {}", outBuff, outLen);
+
+    faabric::Message& call = ExecutorContext::get()->getMsg();
+    call.set_outputdatabytes(outBuff, outLen);
+}
+
 static NativeSymbol faasmNs[] = {
     REG_NATIVE_FUNC(__faasm_append_state, "(**i)"),
     REG_NATIVE_FUNC(__faasm_await_call, "(i)i"),
@@ -241,6 +254,7 @@ static NativeSymbol faasmNs[] = {
     REG_NATIVE_FUNC(__faasm_sm_critical_local_end, "()"),
     REG_NATIVE_FUNC(__faasm_sm_reduce, "(iiii)"),
     REG_NATIVE_FUNC(__faasm_write_output, "($i)"),
+    REG_NATIVE_FUNC(__faasm_write_raw_output_bytes, "(*i)"),
 };
 
 uint32_t getFaasmFunctionsApi(NativeSymbol** nativeSymbols)
