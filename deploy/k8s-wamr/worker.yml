@@ -43,6 +43,7 @@ spec:
 
       containers:
         - image: ghcr.io/lqvd/worker:0.33.0
+          imagePullPolicy: Always
           name: faasm-worker
           ports:
             - containerPort: 8080

@@ -1,5 +1,8 @@
 FROM ghcr.io/lqvd/cli:0.33.0 AS collector
 
+ENV FAASM_GEN_PROTO_LOCAL=on
+ENV FAASM_VERSION=0.33.0
+
 RUN cd /usr/local/code/faasm \
     && ./bin/create_venv.sh \
     && source venv/bin/activate \
