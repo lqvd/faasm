@@ -5,6 +5,7 @@
 #include <faabric/rpc/RpcContext.h>
 #include <faabric/rpc/RpcContextRegistry.h>
 #include <faabric/rpc/RpcServer.h>
+#include <faabric/planner/PlannerClient.h>
 #include <faabric/scheduler/FunctionCallClient.h>
 #include <faabric/scheduler/Scheduler.h>
 #include <faabric/snapshot/SnapshotClient.h>
@@ -12,8 +13,11 @@
 #include <faabric/util/ExecGraph.h>
 #include <faabric/util/batch.h>
 #include <faabric/util/network.h>
+#include <faabric/util/ScopedTelemetry.h>
 #include <wasm/WasmExecutionContext.h>
 #include <wasm/migration.h>
+
+#include <chrono>
 
 namespace wasm {
 void doMigrationPoint(int32_t entrypointFuncWasmOffset,
@@ -95,6 +99,9 @@ void doMigrationPoint(int32_t entrypointFuncWasmOffset,
 
     // Do actual migration
     if (funcMustMigrate) {
+        faabric::util::ScopedTelemetry srcTotal(
+          call->appid(), call->id(), "migration.source.total.us");
+
         std::vector<uint8_t> inputData(entrypointFuncArg.begin(),
                                        entrypointFuncArg.end());
 
@@ -116,13 +123,28 @@ void doMigrationPoint(int32_t entrypointFuncWasmOffset,
         // we are most likely migrating from a non-master host. Thus, we must
         // take and push the snapshot manually.
         auto* exec = faabric::executor::ExecutorContext::get()->getExecutor();
+
+        auto tSnap = std::chrono::steady_clock::now();
         auto snap =
           std::make_shared<faabric::util::SnapshotData>(exec->getMemoryView());
+        faabric::planner::getPlannerClient().reportTelemetry(
+          call->appid(), call->id(), "migration.snapshot.construct.us",
+          faabric::util::usSince(tSnap));
+        faabric::planner::getPlannerClient().reportTelemetry(
+          call->appid(), call->id(), "migration.heap.bytes",
+          (int64_t)exec->getMemoryView().size());
+
         std::string snapKey = "migration_" + std::to_string(msg.id());
         auto& reg = faabric::snapshot::getSnapshotRegistry();
         reg.registerSnapshot(snapKey, snap);
-        faabric::snapshot::getSnapshotClient(hostToMigrateTo)
-          ->pushSnapshot(snapKey, snap);
+
+        {
+            faabric::util::ScopedTelemetry t(
+              call->appid(), call->id(), "migration.snapshot.push.us");
+            faabric::snapshot::getSnapshotClient(hostToMigrateTo)
+              ->pushSnapshot(snapKey, snap);
+        }
+
         msg.set_snapshotkey(snapKey);
 
         // Propagate the group IDx and set the _same_ message ID
@@ -159,6 +181,8 @@ void doMigrationPoint(int32_t entrypointFuncWasmOffset,
             // Set proxy before migration.
             rpcContext->setupForwarding(hostToMigrateTo);
 
+            auto tRpcSer = std::chrono::steady_clock::now();
+
             faabric::RpcMigrationState rpcMigrationState =
               rpcContext->serializeMigrationState();
 
@@ -176,6 +200,18 @@ void doMigrationPoint(int32_t entrypointFuncWasmOffset,
                   std::runtime_error("Failed to serialise RpcMigrationState");
                 getExecutingModule()->doThrowException(exc);
             }
+            faabric::planner::getPlannerClient().reportTelemetry(
+              call->appid(), call->id(), "migration.rpcstate.serialize.us",
+              faabric::util::usSince(tRpcSer));
+            faabric::planner::getPlannerClient().reportTelemetry(
+              call->appid(), call->id(), "migration.rpcstate.channels",
+              (int64_t)rpcMigrationState.channels_size());
+            faabric::planner::getPlannerClient().reportTelemetry(
+              call->appid(), call->id(), "migration.rpcstate.pending",
+              (int64_t)rpcMigrationState.pendingrequests_size());
+            faabric::planner::getPlannerClient().reportTelemetry(
+              call->appid(), call->id(), "migration.rpcstate.bytes",
+              (int64_t)serializedRpcState.size());
 
             req->set_contextdata(serializedRpcState.data(),
                                  serializedRpcState.size());
