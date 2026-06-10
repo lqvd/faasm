@@ -125,6 +125,15 @@ message(STATUS "FAASM SGX Mode: ${FAASM_SGX_MODE}")
 add_definitions(-DBUILD_TARGET_X86_64)
 add_definitions(-DWAMR_EXECUTION_MODE_INTERP=0)
 
+option(FAASM_WAMR_TAIL_CALLS "Enable Wasm tail-call proposal in WAMR" ON)
+
+if (FAASM_WAMR_TAIL_CALLS)
+    message(STATUS "Enabling WAMR tail-call support")
+    set(WAMR_BUILD_TAIL_CALL 1 CACHE BOOL "Enable WAMR tail-call support" FORCE)
+
+    add_compile_definitions(WASM_ENABLE_TAIL_CALL=1)
+endif ()
+
 # ----------------------------------------
 # Faasm configuration
 # ----------------------------------------
