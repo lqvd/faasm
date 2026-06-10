@@ -331,7 +331,7 @@ static int32_t __faasm_rpc_wait_migratable_wrapper(wasm_exec_env_t,
         const auto deadline = std::chrono::steady_clock::now() +
                       std::chrono::milliseconds(kRpcTimeoutMs * 4);
         while (true) {
-            wasm::doMigrationPoint(wasmResumeTarget, std::to_string(frameOffset));
+            // wasm::doMigrationPoint(wasmResumeTarget, std::to_string(frameOffset));
             if (ctx->testResponse(requestId)) {
                 return static_cast<int32_t>(Rpc_StatusCode::OK);
             }
@@ -508,11 +508,11 @@ static int32_t __faasm_rpc_get_request_wrapper(wasm_exec_env_t,
         std::optional<faabric::rpc::PendingInvocation> inv;
         while (true) {
             auto now = std::chrono::steady_clock::now();
-            if (now >= nextCheck) {
-                wasm::doMigrationPoint(wasmResumeTarget,
-                                       std::to_string(frameOffset));
-                nextCheck = now + kMigrationCheck;
-            }
+            // if (now >= nextCheck) {
+            //     wasm::doMigrationPoint(wasmResumeTarget,
+            //                            std::to_string(frameOffset));
+            //     nextCheck = now + kMigrationCheck;
+            // }
 
             inv = server.tryDequeueInvocation(appId, messageId);
             if (inv.has_value()) {
