@@ -451,26 +451,10 @@ static int32_t __faasm_rpc_send_response_wrapper(wasm_exec_env_t,
         }
 
         if (replyHostStr == faabric::util::getSystemConfig().endpointHost) {
-            SPDLOG_DEBUG("RPC send_response req={} local fast path", requestId);
-            try {
-                faabric::rpc::getRpcServer().deliverResponse(resp);
-            } catch (const std::exception& e) {
-                return logAndReturn(
-                  e, "local response delivery", Rpc_StatusCode::UNAVAILABLE);
-            }
+            faabric::rpc::getRpcServer().deliverResponse(resp);
         } else {
-            SPDLOG_DEBUG("RPC send_response req={} remote {}:{}",
-                         requestId,
-                         replyHostStr,
-                         replyPort);
-            try {
-                faabric::rpc::RpcTransportClient client(
-                  replyHostStr, replyPort, RPC_SYNC_PORT, kRpcTimeoutMs);
-                client.asyncSendResponse(resp);
-            } catch (const std::exception& e) {
-                return logAndReturn(
-                  e, "remote response delivery", Rpc_StatusCode::UNAVAILABLE);
-            }
+            faabric::rpc::getRpcServer().sendResponseToHost(
+            resp, replyHostStr, replyPort);
         }
         return static_cast<int32_t>(Rpc_StatusCode::OK);
     }
