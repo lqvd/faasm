@@ -86,6 +86,78 @@ TEST_CASE_METHOD(DistTestsFixture,
     REQUIRE(svcResults->messageresults(0).returnvalue() == 0);
 }
 
+TEST_CASE_METHOD(RpcDistTestsFixture,
+                 "Test RPC ping service migrates with SPOT policy",
+                 "[rpc][service][migration]")
+{
+    updatePlannerPolicy("spot");
+
+    setLocalRemoteSlots(4, 4);
+
+    const std::string hostBefore = getDistTestMasterIp();
+    const std::string hostAfter = getDistTestWorkerIp();
+
+    auto svcReq = faabric::util::batchExecFactory("rpc", "PingSvc", 1);
+    faabric::Message& svcMsg = svcReq->mutable_messages()->at(0);
+    svcMsg.set_islongrunning(true);
+    svcMsg.set_isrpc(true);
+
+    auto preloadDec = std::make_shared<batch_scheduler::SchedulingDecision>(
+      svcReq->appid(), svcReq->groupid());
+    preloadDec->addMessage(hostBefore, 0, 0, 0);
+
+    plannerCli.preloadSchedulingDecision(preloadDec);
+
+    // The preloaded decision should still place the service initially on
+    // hostBefore, then the service should migrate at its migration point.
+    setNextEvictedVmIp({ hostBefore });
+
+    plannerCli.callFunctions(svcReq);
+
+    // For a long-running RPC service, the observable "result" of migration is
+    // not a completed batch result. It is the service discovery entry moving.
+    auto endpointAfter =
+      waitForServiceEndpointOnHost("rpc/PingSvc", hostAfter, 200, 100);
+
+    REQUIRE(endpointAfter.host() == hostAfter);
+    REQUIRE(endpointAfter.appid() == svcReq->appid());
+    REQUIRE(endpointAfter.messageid() == svcReq->messages(0).id());
+
+    // Now check the migrated service is still usable.
+    auto clientReq =
+      faabric::util::batchExecFactory("rpc", "migrate_rpc", 1);
+    faabric::Message& clientMsg = clientReq->mutable_messages()->at(0);
+    clientMsg.set_isrpc(true);
+
+    plannerCli.callFunctions(clientReq);
+
+    auto clientResults = waitForBatchResults(clientReq, 1);
+    REQUIRE(clientResults->messageresults_size() == 1);
+    REQUIRE(clientResults->messageresults(0).returnvalue() == 0);
+
+    const auto& output = clientResults->messageresults(0).outputdata();
+
+    REQUIRE(output.find("Pong: Hello from host A") != std::string::npos);
+    REQUIRE(output.find("Pong: Hello from wherever we are now") !=
+            std::string::npos);
+    REQUIRE(output.find("Pong: Fan-out C") != std::string::npos);
+    REQUIRE(output.find("Pong: Fan-out D") != std::string::npos);
+
+    // Shut down the service on its migrated host.
+    faabric::rpc::RpcTransportClient ctrl(
+      endpointAfter.host(), RPC_ASYNC_PORT, RPC_SYNC_PORT, 5000);
+
+    faabric::RpcShutdownRequest shutdownReq;
+    shutdownReq.set_targetappid(endpointAfter.appid());
+    shutdownReq.set_targetmessageid(endpointAfter.messageid());
+    ctrl.asyncSendShutdown(shutdownReq);
+
+    auto svcResults = waitForBatchResults(svcReq, 1);
+    REQUIRE(svcResults->messageresults_size() == 1);
+
+    updatePlannerPolicy("bin-pack");
+}
+
 TEST_CASE_METHOD(DistTestsFixture,
                  "Test SNB migration stop-and-restart",
                  "[rpc][snb][migration]")
