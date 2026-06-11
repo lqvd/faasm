@@ -156,8 +156,12 @@ void doMigrationPoint(int32_t entrypointFuncWasmOffset,
                 getExecutingModule()->doThrowException(exc);
             }
 
-            // Set proxy before migration.
-            rpcContext->setupForwarding(hostToMigrateTo);
+            if (call->islongrunning()) {
+                faabric::rpc::getRpcServer().beginServiceQueueMigration(
+                  call->appid(),
+                  call->id(),
+                  std::chrono::milliseconds(faabric::rpc::kServiceForwardingTtlMs));
+            }
 
             faabric::RpcMigrationState rpcMigrationState =
               rpcContext->serializeMigrationState();
@@ -179,16 +183,6 @@ void doMigrationPoint(int32_t entrypointFuncWasmOffset,
 
             req->set_contextdata(serializedRpcState.data(),
                                  serializedRpcState.size());
-
-            if (call->islongrunning()) {
-                faabric::rpc::getRpcServer().beginServiceQueueMigration(
-                  call->appid(),
-                  call->id(),
-                  std::chrono::milliseconds(faabric::rpc::kServiceForwardingTtlMs));
-            }
-
-            SPDLOG_INFO("RPC - Removing context for {}", call->id());
-            registry.removeContext(call->appid(), call->id());
         }
 
         if (call->recordexecgraph()) {
