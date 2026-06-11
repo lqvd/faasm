@@ -20,6 +20,32 @@ class RpcDistTestsFixture : public DistTestsFixture
         plannerCli.preloadSchedulingDecision(preloadDec);
         setNextEvictedVmIp({ hostBefore });
     }
+
+     faabric::planner::ServiceEndpoint waitForServiceEndpointOnHost(
+      const std::string& serviceKey,
+      const std::string& expectedHost,
+      int retries = 100,
+      int sleepMs = 100)
+    {
+        std::optional<faabric::planner::ServiceEndpoint> endpoint;
+
+        for (int i = 0; i < retries; i++) {
+            endpoint = plannerCli.resolveServiceEndpoint(serviceKey);
+
+            if (endpoint.has_value() && endpoint->host() == expectedHost) {
+                return endpoint.value();
+            }
+
+            SLEEP_MS(sleepMs);
+        }
+
+        REQUIRE(endpoint.has_value());
+        INFO("Expected host: " << expectedHost);
+        INFO("Actual host: " << endpoint->host());
+        REQUIRE(endpoint->host() == expectedHost);
+
+        return endpoint.value();
+    }
 };
 
 TEST_CASE_METHOD(DistTestsFixture,

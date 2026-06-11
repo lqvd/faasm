@@ -184,9 +184,8 @@ void doMigrationPoint(int32_t entrypointFuncWasmOffset,
                 faabric::rpc::getRpcServer().beginServiceQueueMigration(
                   call->appid(),
                   call->id(),
-                  std::chrono::milliseconds(faabric::rpc::kRpcTimeoutMs));
+                  std::chrono::milliseconds(faabric::rpc::kServiceForwardingTtlMs));
             }
-
 
             SPDLOG_INFO("RPC - Removing context for {}", call->id());
             registry.removeContext(call->appid(), call->id());
