@@ -1,4 +1,5 @@
-FROM ghcr.io/lqvd/cli:0.33.0 AS collector
+ARG FAASM_VERSION=0.33.0
+FROM ghcr.io/lqvd/cli:${FAASM_VERSION} AS collector
 
 ENV FAASM_GEN_PROTO_LOCAL=on
 ENV FAASM_VERSION=0.33.0

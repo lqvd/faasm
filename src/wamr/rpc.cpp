@@ -345,6 +345,34 @@ static int32_t __faasm_rpc_wait_migratable_wrapper(wasm_exec_env_t,
     RPC_CATCH_RETURN("wait migratable")
 }
 
+static int32_t __faasm_rpc_wait_wrapper(wasm_exec_env_t,
+                                        uint32_t requestId)
+{
+    SPDLOG_DEBUG("RPC wait req={}", requestId);
+
+    auto ctx = getCurrentContext();
+    if (!ctx) {
+        SPDLOG_WARN("RPC - wait migratable: no RpcContext");
+        return static_cast<int32_t>(Rpc_StatusCode::INTERNAL);
+    }
+
+    try {
+        const auto deadline = std::chrono::steady_clock::now() +
+                      std::chrono::milliseconds(kRpcTimeoutMs * 4);
+        while (true) {
+            if (ctx->testResponse(requestId)) {
+                return static_cast<int32_t>(Rpc_StatusCode::OK);
+            }
+            if (std::chrono::steady_clock::now() >= deadline) {
+                SPDLOG_WARN("RPC wait_migratable req={} timed out", requestId);
+                return static_cast<int32_t>(Rpc_StatusCode::DEADLINE_EXCEEDED);
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+    }
+    RPC_CATCH_RETURN("wait migratable")
+}
+
 static int32_t __faasm_rpc_get_response_wrapper(wasm_exec_env_t,
                                                 uint32_t requestId,
                                                 int32_t* outRespOffset,
@@ -549,12 +577,93 @@ static int32_t __faasm_rpc_get_request_wrapper(wasm_exec_env_t,
     RPC_CATCH_RETURN("get request")
 }
 
+static int32_t __faasm_rpc_get_request_nomig_wrapper(wasm_exec_env_t,
+                                                     uint32_t* outRequestId,
+                                                     int32_t* outMethodOffset,
+                                                     int32_t* outMethodLen,
+                                                     int32_t* outPayloadOffset,
+                                                     int32_t* outPayloadLen,
+                                                     int32_t* outReplyHostOffset,
+                                                     int32_t* outReplyHostLen,
+                                                     int32_t* outReplyPort)
+{
+    WasmAbi abi(getExecutingWAMRModule());
+
+    abi.validate(outRequestId, sizeof(uint32_t), "request id");
+    abi.validate(outMethodOffset, sizeof(int32_t), "method offset");
+    abi.validate(outMethodLen, sizeof(int32_t), "method length");
+    abi.validate(outPayloadOffset, sizeof(int32_t), "payload offset");
+    abi.validate(outPayloadLen, sizeof(int32_t), "payload length");
+    abi.validate(outReplyHostOffset, sizeof(int32_t), "reply host offset");
+    abi.validate(outReplyHostLen, sizeof(int32_t), "reply host length");
+    abi.validate(outReplyPort, sizeof(int32_t), "reply port");
+    if (!abi.ok()) {
+        return static_cast<int32_t>(Rpc_StatusCode::INTERNAL);
+    }
+
+    *outRequestId = 0;
+    *outMethodOffset = 0;
+    *outMethodLen = 0;
+    *outPayloadOffset = 0;
+    *outPayloadLen = 0;
+    *outReplyHostOffset = 0;
+    *outReplyHostLen = 0;
+    *outReplyPort = 0;
+
+    try {
+        const auto& msg = faabric::executor::ExecutorContext::get()->getMsg();
+        const int32_t appId = msg.appid();
+        const int32_t messageId = msg.id();
+        auto& server = faabric::rpc::getRpcServer();
+
+        constexpr auto kMigrationCheck = std::chrono::milliseconds(100);
+        auto nextCheck = std::chrono::steady_clock::now() + kMigrationCheck;
+
+        std::optional<faabric::rpc::PendingInvocation> inv;
+        while (true) {
+            auto now = std::chrono::steady_clock::now();
+            inv = server.tryDequeueInvocation(appId, messageId);
+            if (inv.has_value()) {
+                break;
+            }
+            if (server.isShutdownRequested(appId, messageId)) {
+                SPDLOG_INFO(
+                  "RPC get_request app={} msg={} drained", appId, messageId);
+                return static_cast<int32_t>(Rpc_StatusCode::CANCELLED);
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+
+        *outRequestId = inv->requestId;
+        *outReplyPort = inv->replyPort;
+
+        if (int32_t s =
+              abi.writeString(inv->method, outMethodOffset, outMethodLen);
+            s != static_cast<int32_t>(Rpc_StatusCode::OK)) {
+            return s;
+        }
+        if (int32_t s = abi.writeBytes(
+              reinterpret_cast<const uint8_t*>(inv->payload.data()),
+              inv->payload.size(),
+              outPayloadOffset,
+              outPayloadLen,
+              /*nullTerminate=*/false);
+            s != static_cast<int32_t>(Rpc_StatusCode::OK)) {
+            return s;
+        }
+        return abi.writeString(
+          inv->replyHost, outReplyHostOffset, outReplyHostLen);
+    }
+    RPC_CATCH_RETURN("get request")
+}
+
 static NativeSymbol ns[] = {
     REG_NATIVE_FUNC(__faasm_rpc_channel_create, "(**)i"),
     REG_NATIVE_FUNC(__faasm_rpc_channel_close, "(i)i"),
     REG_NATIVE_FUNC(__faasm_rpc_unary_start, "(i**i*i)i"),
     REG_NATIVE_FUNC(__faasm_rpc_test_response, "(i)i"),
     REG_NATIVE_FUNC(__faasm_rpc_wait_migratable, "(iii)i"),
+    REG_NATIVE_FUNC(__faasm_rpc_wait, "(i)i"),
     REG_NATIVE_FUNC(__faasm_rpc_get_response, "(i****)i"),
     REG_NATIVE_FUNC(__faasm_rpc_send_response, "(i*ii*i*i)i"),
     REG_NATIVE_FUNC(__faasm_rpc_get_request, "(ii********)i"),
