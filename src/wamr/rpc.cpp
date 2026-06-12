@@ -6,6 +6,7 @@
 #include <faabric/rpc/rpc.h>
 #include <faabric/transport/common.h>
 #include <faabric/util/bytes.h>
+#include <faabric/util/config.h>
 #include <faabric/util/logging.h>
 #include <wamr/WAMRModuleMixin.h>
 #include <wamr/WAMRWasmModule.h>
@@ -484,6 +485,12 @@ static int32_t __faasm_rpc_send_response_wrapper(wasm_exec_env_t,
             faabric::rpc::getRpcServer().sendResponseToHost(
             resp, replyHostStr, replyPort);
         }
+        SPDLOG_INFO(
+          "RPC send_response complete host={} req={} replyHost={} ",
+          faabric::util::getSystemConfig().endpointHost,
+          requestId,
+          replyHostStr);
+
         return static_cast<int32_t>(Rpc_StatusCode::OK);
     }
     RPC_CATCH_RETURN("send response")
@@ -511,7 +518,9 @@ static int32_t __faasm_rpc_get_request_wrapper(wasm_exec_env_t,
     abi.validate(outReplyHostOffset, sizeof(int32_t), "reply host offset");
     abi.validate(outReplyHostLen, sizeof(int32_t), "reply host length");
     abi.validate(outReplyPort, sizeof(int32_t), "reply port");
+
     if (!abi.ok()) {
+        SPDLOG_WARN("RPC get_request ABI validation failed");
         return static_cast<int32_t>(Rpc_StatusCode::INTERNAL);
     }
 
@@ -526,53 +535,148 @@ static int32_t __faasm_rpc_get_request_wrapper(wasm_exec_env_t,
 
     try {
         const auto& msg = faabric::executor::ExecutorContext::get()->getMsg();
+        const auto& cfg = faabric::util::getSystemConfig();
+
         const int32_t appId = msg.appid();
         const int32_t messageId = msg.id();
+
         auto& server = faabric::rpc::getRpcServer();
+
+        SPDLOG_INFO(
+          "RPC get_request enter host={} app={} msg={} service={} "
+          "longRunning={} resumeTarget={} frameOffset={} msgRpcReq={}",
+          cfg.endpointHost,
+          appId,
+          messageId,
+          msg.rpcservice(),
+          msg.islongrunning(),
+          wasmResumeTarget,
+          frameOffset,
+          msg.rpcrequestid());
 
         constexpr auto kMigrationCheck = std::chrono::milliseconds(100);
         auto nextCheck = std::chrono::steady_clock::now() + kMigrationCheck;
 
         std::optional<faabric::rpc::PendingInvocation> inv;
+
         while (true) {
             auto now = std::chrono::steady_clock::now();
+
             if (now >= nextCheck) {
                 wasm::doMigrationPoint(wasmResumeTarget,
                                        std::to_string(frameOffset));
-                nextCheck = now + kMigrationCheck;
+                nextCheck = std::chrono::steady_clock::now() + kMigrationCheck;
             }
 
             inv = server.tryDequeueInvocation(appId, messageId);
             if (inv.has_value()) {
+                SPDLOG_INFO(
+                  "RPC get_request dequeued host={} app={} msg={} service={} "
+                  "req={} method={} payloadBytes={} replyHost={} replyPort={}",
+                  cfg.endpointHost,
+                  appId,
+                  messageId,
+                  msg.rpcservice(),
+                  inv->requestId,
+                  inv->method,
+                  inv->payload.size(),
+                  inv->replyHost,
+                  inv->replyPort);
                 break;
             }
+
             if (server.isShutdownRequested(appId, messageId)) {
                 SPDLOG_INFO(
-                  "RPC get_request app={} msg={} drained", appId, messageId);
+                  "RPC get_request shutdown/drained host={} app={} msg={} "
+                  "service={}",
+                  cfg.endpointHost,
+                  appId,
+                  messageId,
+                  msg.rpcservice());
+
                 return static_cast<int32_t>(Rpc_StatusCode::CANCELLED);
             }
+
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
 
         *outRequestId = inv->requestId;
         *outReplyPort = inv->replyPort;
 
-        if (int32_t s =
-              abi.writeString(inv->method, outMethodOffset, outMethodLen);
-            s != static_cast<int32_t>(Rpc_StatusCode::OK)) {
-            return s;
+        int32_t status = abi.writeString(inv->method,
+                                         outMethodOffset,
+                                         outMethodLen);
+        if (status != static_cast<int32_t>(Rpc_StatusCode::OK)) {
+            SPDLOG_WARN(
+              "RPC get_request failed writing method host={} app={} msg={} "
+              "req={} status={}",
+              cfg.endpointHost,
+              appId,
+              messageId,
+              inv->requestId,
+              status);
+
+            return status;
         }
-        if (int32_t s = abi.writeBytes(
-              reinterpret_cast<const uint8_t*>(inv->payload.data()),
+
+        status = abi.writeBytes(
+          reinterpret_cast<const uint8_t*>(inv->payload.data()),
+          inv->payload.size(),
+          outPayloadOffset,
+          outPayloadLen,
+          /*nullTerminate=*/false);
+
+        if (status != static_cast<int32_t>(Rpc_StatusCode::OK)) {
+            SPDLOG_WARN(
+              "RPC get_request failed writing payload host={} app={} msg={} "
+              "req={} payloadBytes={} status={}",
+              cfg.endpointHost,
+              appId,
+              messageId,
+              inv->requestId,
               inv->payload.size(),
-              outPayloadOffset,
-              outPayloadLen,
-              /*nullTerminate=*/false);
-            s != static_cast<int32_t>(Rpc_StatusCode::OK)) {
-            return s;
+              status);
+
+            return status;
         }
-        return abi.writeString(
-          inv->replyHost, outReplyHostOffset, outReplyHostLen);
+
+        status = abi.writeString(inv->replyHost,
+                                 outReplyHostOffset,
+                                 outReplyHostLen);
+
+        if (status != static_cast<int32_t>(Rpc_StatusCode::OK)) {
+            SPDLOG_WARN(
+              "RPC get_request failed writing replyHost host={} app={} msg={} "
+              "req={} replyHost={} status={}",
+              cfg.endpointHost,
+              appId,
+              messageId,
+              inv->requestId,
+              inv->replyHost,
+              status);
+
+            return status;
+        }
+
+        SPDLOG_INFO(
+          "RPC get_request return host={} app={} msg={} service={} req={} "
+          "methodLen={} payloadLen={} replyHost={} replyHostLen={} "
+          "replyPort={} methodOff={} payloadOff={} replyHostOff={}",
+          cfg.endpointHost,
+          appId,
+          messageId,
+          msg.rpcservice(),
+          inv->requestId,
+          *outMethodLen,
+          *outPayloadLen,
+          inv->replyHost,
+          *outReplyHostLen,
+          *outReplyPort,
+          *outMethodOffset,
+          *outPayloadOffset,
+          *outReplyHostOffset);
+
+        return static_cast<int32_t>(Rpc_StatusCode::OK);
     }
     RPC_CATCH_RETURN("get request")
 }
