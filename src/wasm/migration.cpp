@@ -156,15 +156,19 @@ void doMigrationPoint(int32_t entrypointFuncWasmOffset,
                 getExecutingModule()->doThrowException(exc);
             }
 
-            if (call->islongrunning()) {
-                faabric::rpc::getRpcServer().beginServiceQueueMigration(
-                  call->appid(),
-                  call->id(),
-                  std::chrono::milliseconds(faabric::rpc::kServiceForwardingTtlMs));
-            }
+            faabric::RpcMigrationState rpcMigrationState;
+            {
+                faabric::util::FullLock lock(registry.getMutex());
 
-            faabric::RpcMigrationState rpcMigrationState =
-              rpcContext->serializeMigrationState();
+                if (call->islongrunning()) {
+                    faabric::rpc::getRpcServer().beginServiceQueueMigration(
+                      call->appid(),
+                      call->id(),
+                      std::chrono::milliseconds(faabric::rpc::kServiceForwardingTtlMs));
+                }
+
+                rpcMigrationState = rpcContext->serializeMigrationState();
+            }
 
             SPDLOG_INFO(
               "RPC - Serialising migration state for msg {}: "
